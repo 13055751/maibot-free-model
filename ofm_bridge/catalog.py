@@ -353,6 +353,44 @@ def provider_block(provider_name: str, *, timeout: int = 300) -> str:
     ])
 
 
+def openai_provider_block(
+    base_url: str,
+    api_key: str,
+    *,
+    provider_name: str = DEFAULT_PROVIDER_NAME,
+    timeout: int = 300,
+) -> str:
+    """把 sidecar 当成**普通 OpenAI 端点**接入的 `[[api_providers]]` 块。
+
+    这条路子完全不经过本插件的 `@LLMProvider`：麦麦用它内置的 `openai`
+    客户端直接对 sidecar 的 `/v1` 说话，于是请求投影、工具调用、流式解析
+    全部由麦麦自己做——兼容性最好，代价是思考内容那一层要靠麦麦自己的
+    `reasoning_parse_mode`（sidecar 发的是 `delta.reasoning`，不是
+    `reasoning_content`，部分解析模式取不到）。
+
+    与插件 Provider 路径的分工：
+    - 想省事、要最大兼容 → 用这条路，`client_type = "openai"`；
+    - 想连思考内容一起拿到 → 用插件路径，`client_type = our_free_model`。
+
+    `base_url` 必须带 `/v1`，且要与握手信息里的实际端口一致（端口被占用时
+    vendored 服务会另选，别照抄默认值）。
+    """
+    return "\n".join([
+        "[[api_providers]]",
+        "# 直连本机 sidecar 的 OpenAI 兼容端点；不需要本插件的 client_type。",
+        f'name = "{provider_name}"',
+        f'base_url = "{base_url.rstrip("/")}"',
+        f'api_key = "{api_key}"',
+        '# 用麦麦内置的 OpenAI 客户端，协议走标准 Chat Completions。',
+        'client_type = "openai"',
+        'auth_type = "bearer"',
+        '# 让 WebUI 的“拉取模型”能列出 sidecar 支持的模型。',
+        'model_list_endpoint = "/models"',
+        f"timeout = {timeout}",
+        "max_retry = 2",
+    ])
+
+
 def render_toml(
     catalog: list[ModelRow],
     *,

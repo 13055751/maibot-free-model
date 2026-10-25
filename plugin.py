@@ -51,7 +51,7 @@ if str(_PLUGIN_DIR) not in sys.path:
 
 from ofm_bridge import catalog as catalog_module  # noqa: E402
 from ofm_bridge import gateway  # noqa: E402
-from ofm_bridge.manager import SidecarError, SidecarManager  # noqa: E402
+from ofm_bridge.manager import DEFAULT_PORT, SidecarError, SidecarManager  # noqa: E402
 from ofm_bridge.provider import FreeModelProvider, ProviderUnavailable  # noqa: E402
 
 CLIENT_TYPE = catalog_module.CLIENT_TYPE
@@ -76,8 +76,9 @@ class PluginSection(PluginConfigBase):
         "那种情况请填绝对路径，例如 ~/.nvm/versions/node/v24.20.0/bin/node。",
     )
     port: int = Field(
-        default=0,
-        description="sidecar 监听端口。0 = 交给系统分配（推荐，避免与本机已有服务抢占）。",
+        default=DEFAULT_PORT,
+        description="sidecar 监听端口。默认 18900，固定值才能把 base_url 写死于模型配置；"
+        "0 = 交给系统分配（每次启动都会变，模型配置得跟着改）。",
         ge=0,
         le=65535,
     )
@@ -268,6 +269,8 @@ class OurFreeModelPlugin(MaiBotPlugin):
             return await self._reply(stream_id, await self._models_text())
         if action == "toml":
             return await self._dispatch_toml(stream_id)
+        if action in ("endpoint", "openai", "url"):
+            return await self._reply(stream_id, await self._endpoint_text())
         if action in ("restart", "start"):
             return await self._reply(stream_id, await self._restart_text())
         if action == "login":
@@ -319,13 +322,17 @@ class OurFreeModelPlugin(MaiBotPlugin):
     def _help_text(self) -> str:
         return (
             "Our Free Model｜免费模型车道\n"
+            "/ofm endpoint — 输出本机 OpenAI 兼容端点（地址 + 密钥 + 可粘贴的 provider 块）\n"
             "/ofm status — sidecar 与车道状态\n"
             "/ofm models — 当前可用模型清单\n"
-            "/ofm toml — 生成可直接粘贴进 model_config.toml 的配置段\n"
+            "/ofm toml — 生成 [[models]] 段（配合上面二选一使用）\n"
             "/ofm restart — 重启 sidecar（改了端口/数据目录/Node 路径后用）\n"
             "/ofm login — 打开账号渠道登录页（Qoder/TRAE/Cline/Gemini 等十个）\n"
-            "\n注意：麦麦的插件 Provider 不能自动广播模型，必须把 /ofm toml"
-            " 生成的配置粘进 model_config.toml 才能开始使用。"
+            "\n两条接入方式：\n"
+            "  1) 省事：/ofm endpoint 拿 base_url + api_key，client_type 填 openai，"
+            "直接用麦麦内置 OpenAI 客户端；\n"
+            "  2) 完整：client_type 填 our_free_model 走本插件，连思考内容一起拿到。\n"
+            "两种都还需要 [[models]] 段：插件 Provider 无法向 WebUI 广播模型清单。"
         )
 
     async def _status_text(self) -> str:
@@ -440,6 +447,38 @@ class OurFreeModelPlugin(MaiBotPlugin):
         if not report.get("ok"):
             return f"sidecar 起来了但清单为空：{report.get('error')}"
         return f"已重启：{report['base_url']}，{report['models']} 个模型可用。"
+
+    async def _endpoint_text(self) -> str:
+        """输出可作为纯 OpenAI 端点使用的地址、密钥与 provider 块。
+
+        这条路不经过本插件的 `@LLMProvider`：麦麦用内置 `openai` 客户端直连
+        sidecar，协议投影与流式解析都由麦麦自己做，兼容性最好。端口是固定的，
+        所以这段配置写完就不用再动（除非 18900 被别的程序占了）。
+        """
+        provider = await self._ready_provider()
+        try:
+            endpoint = await provider.manager.ensure_running()
+        except (SidecarError, ProviderUnavailable) as exc:
+            return f"sidecar 未就绪：{exc}"
+        block = catalog_module.openai_provider_block(
+            endpoint.base_url,
+            endpoint.api_key,
+            provider_name=self._cfg().providerName,
+            timeout=self._cfg().turnTimeout,
+        )
+        assigned = f"（默认 {DEFAULT_PORT}）" if endpoint.port == DEFAULT_PORT else (
+            f"（注意：{DEFAULT_PORT} 被占用，实际用了 {endpoint.port}，以这里为准）"
+        )
+        return (
+            "【本机 OpenAI 兼容端点】\n"
+            f"base_url : {endpoint.base_url}{assigned}\n"
+            f"api_key  : {endpoint.api_key}\n"
+            f"模型列表 : {endpoint.base_url}/models\n"
+            "\n把下面这段粘进 model_config.toml（client_type 是麦麦内置的 openai）：\n"
+            f"{block}\n"
+            "\n再补 [[models]] 段：/ofm toml 会逐段发来，或直接抄生成的"
+            "generated_models.toml。"
+        )
 
     async def _login_text(self) -> str:
         if self._provider is None:

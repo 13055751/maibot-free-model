@@ -68,8 +68,13 @@ GRACEFUL_TIMEOUT = 20.0
 #: 握手行前缀，与 `sidecar/bootstrap.mjs` 严格对齐。
 READY_PREFIX = "OFM_READY "
 
-#: 网关默认端口。0 表示交给系统分配，避免与用户本机已有服务抢端口。
-DEFAULT_PORT = 0
+#: 网关默认端口。
+#:
+#: 固定而不是交给系统分配（0）：这个端口要写进 MaiBot 的 `model_config.toml`，
+#: 每次启动都变的话，配置就得跟着改。端口被占用时 vendored 服务会自动另选，
+#: 所以握手信息里的 `port` 才是权威值 —— 插件在 `/ofm endpoint` 与状态里
+#: 打印实际端口，别假设它一定是这个默认值。
+DEFAULT_PORT = 18900
 
 #: 一次从管道取多少字节。
 _CHUNK = 4096
