@@ -57,7 +57,13 @@ from typing import Any
 READY_TIMEOUT = 120.0
 
 #: 优雅退出等待（秒），超过就升级成强杀。
-GRACEFUL_TIMEOUT = 8.0
+#:
+#: 实测正常停机只要 0.15s（SIGTERM → 进程退出），但**偶发**会超时：渠道
+#: Worker 可能正卡在上游请求里（启动时的自动签到就是一例），那时 vendored
+#: 的 `close()` 要等它收尾。窗口给到 20s，因为强杀是有代价的 —— 未落盘的
+#: 用量统计会丢，也拿不到一次干净的收尾。`_wait_exit` 是轮询，进程真退了
+#: 就立刻返回，所以放宽窗口对正常路径没有成本。
+GRACEFUL_TIMEOUT = 20.0
 
 #: 握手行前缀，与 `sidecar/bootstrap.mjs` 严格对齐。
 READY_PREFIX = "OFM_READY "
