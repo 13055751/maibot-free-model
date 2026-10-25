@@ -1,0 +1,33 @@
+# ── Runner 生成的运行时配置 ──────────────────────────────
+# 含本机路径与端口，属于实例状态而非源码。
+/config.toml
+
+# ── sidecar 的数据文件：按文件名忽略，不论落在哪一层 ──────
+# 默认数据目录由 Host 分配（`data/plugins/<插件ID>/sidecar/`），在插件目录
+# 之外；但 `dataDir` 可以配成任意路径，包括这里。凭据文件是 0600 的本机
+# 明文，一旦被提交就等于把账号交出去，所以按名字兜住而不是按目录。
+channel-credentials.json
+settings.json
+service.lock
+generated_models.toml
+usage.json
+availability.json
+*-usage.json
+
+# 绝不要提交插件运行期产生的目录（默认在插件目录外，防手滑建在里面）
+/ofm-data/
+/.ofm-data/
+/sidecar/ofm-data/
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# ── 编辑器 / 系统 ───────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
