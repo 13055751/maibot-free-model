@@ -35,10 +35,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+import time
 from pathlib import Path
 from typing import Any, ClassVar, Iterable
 
-from maibot_sdk import Command, Field, LLMProvider, LLMProviderBase, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk import API, Command, Field, LLMProvider, LLMProviderBase, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 #: Runner 用 `spec_from_file_location` 加载本文件，`sys.path` 里只有
@@ -128,6 +129,10 @@ class OurFreeModelPlugin(MaiBotPlugin):
         self._provider: FreeModelProvider | None = None
         self._startup: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        # WebUI 查询有 10 秒预算，而冷启动要十几秒，所以缓存清单、且查询**不**触发启动。
+        self._catalog_at: float = 0.0
+        self._catalog_cache: list = []
+        self._restart_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -495,6 +500,155 @@ class OurFreeModelPlugin(MaiBotPlugin):
             "Gemini / MiniMax / ZCode / Loomy / Raccoon / LobsterAI 等渠道登录，"
             "登录后对应模型就会出现在 /ofm models 里。"
         )
+
+    # -------------------------------------------------------------- webui APIs
+
+    def _live_endpoint(self):
+        """当前已就绪的 endpoint；**不**触发启动。
+
+        WebUI 的 query 必须在 10 秒内返回，而 `ensure_running()` 可能要走
+        十几次网络往返拉清单。所以这里只读现有连接，把"要不要启动"留给
+        自动启动（on_load）和显式重启。
+        """
+        manager = self._manager
+        if manager is None or not manager.is_running():
+            return None
+        return manager.endpoint
+
+    def _lanes_text(self, models: list) -> str:
+        counts: dict[str, int] = {}
+        for model in models:
+            label = catalog_module.lane_label(model.lane)
+            counts[label] = counts.get(label, 0) + 1
+        return "、".join(f"{k}×{v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])) or "—"
+
+    async def _cached_models(self, *, ttl: float = 30.0, timeout: float = 4.0) -> tuple[list, str]:
+        """带缓存的清单读取。返回 (models, 错误说明)。
+
+        30 秒缓存是为了让管理页反复刷新不把上游打爆；`timeout` 压到 4 秒是
+        为了守住 WebUI 的 10 秒单次预算。
+        """
+        now = time.monotonic()
+        if self._catalog_cache and now - self._catalog_at < ttl:
+            return self._catalog_cache, ""
+        endpoint = self._live_endpoint()
+        if endpoint is None:
+            return [], "sidecar 未运行"
+        if self._provider is None:
+            return [], "provider 未装配"
+        try:
+            models = await self._provider.list_models(timeout=timeout)
+        except (SidecarError, ProviderUnavailable, gateway.GatewayError, asyncio.TimeoutError) as exc:
+            # 有旧缓存就用旧的，同时把错误带回去显示
+            return self._catalog_cache, f"清单读取失败：{exc}"
+        self._catalog_cache = models
+        self._catalog_at = now
+        return models, ""
+
+    @API("status", description="sidecar 状态与模型数量摘要", version="1")
+    async def api_status(self, **kwargs) -> dict[str, Any]:
+        del kwargs
+        manager = self._manager
+        endpoint = self._live_endpoint()
+        models, note = await self._cached_models()
+        if endpoint is None:
+            hint = (
+                "sidecar 未运行。点下方按钮重启，或在聊天里发 /ofm restart。"
+                if manager is not None
+                else "插件未装配（配置里的 enabled 可能为 false）。"
+            )
+            return {
+                "state": "未运行",
+                "models": 0,
+                "port": "—",
+                "lanes": "—",
+                "hint": hint,
+            }
+        return {
+            "state": "运行中" + ("（清单读取失败）" if note else ""),
+            "models": len(models),
+            "port": str(endpoint.port),
+            "lanes": self._lanes_text(models),
+            "hint": note or f"网关 {endpoint.base_url}｜sidecar v{endpoint.version}",
+        }
+
+    @API("models", description="当前可路由模型清单", version="1")
+    async def api_models(self, **kwargs) -> list[dict[str, Any]]:
+        del kwargs
+        models, _note = await self._cached_models()
+        return [
+            {
+                "name": model.name,
+                "id": model.display_name or model.identifier,
+                "lane": catalog_module.lane_label(model.lane),
+                "context": f"{model.context_window // 1024}k",
+                "effort": model.effort_default or "—",
+            }
+            for model in models
+        ]
+
+    @API("config", description="可直接粘贴的接入配置", version="1")
+    async def api_config(self, **kwargs) -> dict[str, Any]:
+        del kwargs
+        endpoint = self._live_endpoint()
+        models, note = await self._cached_models()
+        provider_name = self._cfg().providerName
+        if endpoint is None:
+            return {
+                "provider_block": "sidecar 未运行：先重启，再回来复制配置。",
+                "models_toml": note or "",
+            }
+        provider_block = catalog_module.openai_provider_block(
+            endpoint.base_url,
+            endpoint.api_key,
+            provider_name=provider_name,
+            timeout=self._cfg().turnTimeout,
+        )
+        models_toml = (
+            catalog_module.render_toml(models, provider_name=provider_name)
+            if models else f"清单为空：{note or '上游此刻不可达，稍后刷新'}"
+        )
+        return {"provider_block": provider_block, "models_toml": models_toml}
+
+    @API("restart", description="重启 sidecar（后台执行，立即返回）", version="1")
+    async def api_restart(self, **kwargs) -> dict[str, Any]:
+        """触发重启并**立刻**返回。
+
+        WebUI 的 action 只有 10 秒预算，而一次冷启动要十几到几十秒，所以
+        这里只负责起一个后台任务；页面刷新后由 `status` 查询报告结果。
+        """
+        del kwargs
+        if self._restart_task is not None and not self._restart_task.done():
+            return {"ok": True, "detail": "重启已在进行中，十秒后刷新查看。"}
+        self._restart_task = asyncio.create_task(self._restart_worker())
+        return {"ok": True, "detail": "已触发重启，约十秒后刷新查看状态。"}
+
+    async def _restart_worker(self) -> None:
+        """后台重启；异常只记日志，绝不冒泡到事件循环。"""
+        try:
+            manager = self._manager
+            self._manager = None
+            self._provider = None
+            self._catalog_cache = []
+            self._catalog_at = 0.0
+            if manager is not None:
+                await manager.shutdown()
+            if not self._cfg().enabled:
+                self.ctx.logger.warning("[free-model] 重启被跳过：插件处于关闭状态。")
+                return
+            await self._build()
+            assert self._provider is not None
+            report = await self._provider.probe()
+            if report.get("ok"):
+                self.ctx.logger.info(
+                    "[free-model] 重启完成：%s，%d 个模型。", report["base_url"], report["models"]
+                )
+            else:
+                self.ctx.logger.warning("[free-model] 重启后仍不可用：%s", report.get("error"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 后台任务不能把异常抛回循环
+            self.ctx.logger.error("[free-model] 重启失败：%r", exc)
 
     # ----------------------------------------------------------------- tools
 

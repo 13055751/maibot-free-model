@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "required_capabilities": ["declarative_basic"],
+  "pages": [
+    {
+      "id": "ofm",
+      "title": "免费模型",
+      "description": "sidecar 状态、模型清单与可直接粘贴的接入配置",
+      "placement": "sidebar",
+      "icon": "settings",
+      "mode": "declarative",
+      "queries": {
+        "status": {"api": "status"},
+        "models": {"api": "models"},
+        "config": {"api": "config"}
+      },
+      "actions": {
+        "restart": {
+          "api": "restart",
+          "confirmation": "确认重启 sidecar？正在进行的对话会失败，恢复约需十几秒。"
+        }
+      },
+      "content": [
+        {
+          "type": "grid",
+          "columns": 2,
+          "children": [
+            {"type": "stat", "label": "进程", "value": {"source": "status", "field": "state"}},
+            {"type": "stat", "label": "模型数", "value": {"source": "status", "field": "models"}},
+            {"type": "stat", "label": "端口", "value": {"source": "status", "field": "port"}},
+            {"type": "stat", "label": "车道", "value": {"source": "status", "field": "lanes"}}
+          ]
+        },
+        {"type": "text", "label": "提示", "value": {"source": "status", "field": "hint"}},
+        {
+          "type": "collapsible",
+          "label": "接入配置（client_type = openai，可直接粘贴）",
+          "default_open": true,
+          "children": [
+            {"type": "text", "value": {"source": "config", "field": "provider_block"}, "format": "log"}
+          ]
+        },
+        {
+          "type": "table",
+          "value": {"source": "models", "field": ""},
+          "columns": [
+            {"field": "name", "label": "模型名"},
+            {"field": "id", "label": "上游 id"},
+            {"field": "lane", "label": "车道"},
+            {"field": "context", "label": "窗口"},
+            {"field": "effort", "label": "思考档"}
+          ]
+        },
+        {
+          "type": "collapsible",
+          "label": "[[models]] 配置（整段粘贴进 model_config.toml）",
+          "children": [
+            {"type": "text", "value": {"source": "config", "field": "models_toml"}, "format": "log"}
+          ]
+        },
+        {"type": "button", "label": "重启 sidecar", "action": "restart", "variant": "danger"}
+      ]
+    }
+  ]
+}

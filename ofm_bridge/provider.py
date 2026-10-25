@@ -199,7 +199,7 @@ class FreeModelProvider(LLMProviderBase):
 
     # ------------------------------------------------------------------ catalog
 
-    async def list_models(self) -> list:
+    async def list_models(self, *, timeout: float = 25.0) -> list:
         """实时清单（给 `/ofm models`、`/ofm toml` 用）。
 
         两份数据源合并：`/v1/models` 给出可路由集合与思考档位，管理摘要给出
@@ -207,8 +207,8 @@ class FreeModelProvider(LLMProviderBase):
         visual 保守为假），不因一次额外请求失败而让清单整体不可用。
         """
         endpoint = await self._endpoint()
-        rows = await gateway.list_models(endpoint.base_url, endpoint.api_key)
-        rich = await gateway.management_summary(endpoint.base_url, endpoint.api_key)
+        rows = await gateway.list_models(endpoint.base_url, endpoint.api_key, timeout=timeout)
+        rich = await gateway.management_summary(endpoint.base_url, endpoint.api_key, timeout=timeout)
         return build_catalog(rows, rich)
 
     async def probe(self) -> dict[str, Any]:
